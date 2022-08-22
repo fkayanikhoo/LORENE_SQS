@@ -1,66 +1,19 @@
-
-/*
- *   Copyright (c) 2002 Jerome Novak & Emanuel Marcq
- *   Copyright (c) 2014 Debarati Chatterjee
- *
- *   This file is part of LORENE.
- *
- *   LORENE is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   LORENE is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with LORENE; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
- *
- */
-
-/*
- * $Id: mag_eos_star.C,v 1.6 2014/10/13 08:53:57 j_novak Exp $
- * $Log: mag_eos_star.C,v $
- * Revision 1.6  2014/10/13 08:53:57  j_novak
- * Lorene classes and functions now belong to the namespace Lorene.
- *
- * Revision 1.5  2014/09/22 15:00:09  j_novak
- * Maximal magnetic field display.
- *
- * Revision 1.4  2014/07/04 13:01:47  j_novak
- * Parameter file for mass-shedding limit.
- *
- * Revision 1.3  2014/05/27 12:41:25  j_novak
- * Added the possibility to converge to a given mgnetic moment.
- *
- * Revision 1.2  2014/04/29 13:46:54  j_novak
- * Addition of swicthes 'use_B_in_eos' and 'include_magnetisation' to control the model.
- *
- * Revision 1.1  2014/04/28 14:41:15  j_novak
- * Files for magnetisation star main code.
- *
- *
- * $Header: /cvsroot/Lorene/Codes/Mag_eos_star/mag_eos_star.C,v 1.6 2014/10/13 08:53:57 j_novak Exp $
- *
- */
-
 // headers C
 #include <cmath>
 #include <fstream>
 #include <mpi.h>
 #include <string>
+#include <unistd.h>
 // headers Lorene
 #include "et_rot_mag.h"
 #include "eos.h"
 #include "utilitaires.h"
-#include "graphique.h"
+//#include "graphique.h"
 #include "nbr_spx.h"
 #include "unites.h"
 #include "metric.h"	    
-
+#include <tensor.h>
+#include <tbl.h>
 namespace Lorene{
 // Local prototype (for drawings only)
 Cmp raccord_c1(const Cmp& uu, int l1) ; 
@@ -77,11 +30,67 @@ Cmp f_j(const Cmp& x, double a_j){
 Cmp M_j(const Cmp& x, double a_j){ 
   return - a_j*x ;
 }
+double r(Et_magnetisation  star,double theta)
+{
+  const Map& mp=star.get_mp() ;
+  const Mg3d& mg = *(mp.get_mg()) ;
+  int type_t = mg.get_type_t() ; 
+ #ifndef NDEBUG
+  int type_p = mg.get_type_p() ; 
+ #endif
+  int nt = mg.get_nt(0) ;        
+  assert( (type_t == SYM) || (type_t == NONSYM) ) ; 
+  assert( (type_p == SYM) || (type_p == NONSYM) ) ; 
+  int k = 0 ; 
+  int j = (type_t == SYM ? nt-1 : nt / 2); 
+  int l = star.l_surf()(k, j) ; 
+  double xi = star.xi_surf()(k, j) ; 
+  return mp.val_r(l, xi, theta, 0); 
+}
 
-void core(int i,int num)
+double energy(Et_magnetisation &star, int num)
+{
+  double r=star.ray_pole();
+  double wyn=0;
+  for (int i = 0; i < num; i++)
+  {
+    wyn+=star.get_ener()().val_point(r*i/num,0,0)*4*M_PI*r/num*pow(r*i/num,2);
+  }
+  return wyn*Lorene::Unites::rhonuc_si*pow(Lorene::Unites::c_si,2)*pow(Lorene::Unites::r_unit,3);
+}
+
+double energy_domain(Et_magnetisation &star, int num)
+{
+  Tenseur energy_dens=star.get_a_car()*star.get_ener()*star.get_bbb();
+  energy_dens.set_std_base();
+  Tbl wyn=energy_dens().integrale_domains();
+  return wyn(num)*Lorene::Unites::rhonuc_si*pow(Lorene::Unites::c_si,2)*pow(Lorene::Unites::r_unit,3);
+}
+
+double energy(Et_magnetisation &star)
+{
+  Tenseur energy_dens=star.get_a_car()*star.get_ener()*star.get_bbb();
+  energy_dens.set_std_base();
+  double *wyn=new double(energy_dens().integrale());
+  return (*wyn)*Lorene::Unites::rhonuc_si*pow(Lorene::Unites::c_si,2)*pow(Lorene::Unites::r_unit,3);
+}
+void wy(ofstream& out,Et_magnetisation  star,int nt)
+{
+  //double theta[nt];
+  out<<star.MagMom()/1.e32<<" ";
+  out<<star.Magn()(0)(0,0,0,0)*Lorene::Unites_mag::mag_unit/1.e13<<" ";
+  for (int i=0;i<nt;i++)
+  {
+    out<<r(star,i*M_PI/nt)*10<<" ";
+  }
+  out<<endl;
+}
+int core(int i,int num)
 {
   ofstream out;
+  ofstream fout;
   out.open("temp"+to_string(num)+".txt",ios_base::app);
+  fout.open("surf"+to_string(num)+".txt",ios_base::app);
   using namespace Unites_mag ;
   char blabla[120] ;
   int relat_i, mer_max, mer_rot, mer_change_omega, mer_fix_omega, 
@@ -138,7 +147,17 @@ void core(int i,int num)
   fich >> nzadapt; fich.getline(blabla, 120) ;
   fich >> nt; fich.getline(blabla, 120) ;
   fich >> np; fich.getline(blabla, 120) ;
-
+  if (i==0)
+  {
+    ofstream out1;
+    out1.open("results.txt");
+    out1<<a_j0<<endl;
+    out1<<"R_circ"<< setw(15) << "R_eq" << setw(15) << "R_pole"<< setw(15) 
+  << "M_g"<< setw(15) << "M_b"<< setw(15) << "MM(1e32)"  << setw(15) << "Cent"<<setw(15)<<"RPolar"<<setw(15)<<"Teq"<<setw(15)<<"grv2_err"<<setw(15)<<"grv3_err"<<setw(15);
+  out1<<"number_den"<<setw(15)<<" Ttoal energy "<<setw(15)<<" central pressure "<<setw(15)<<" central energy density "<<setw(15)<<" quadrupole momentum "<<endl;
+    out1.close();
+  }
+  
   int* nr = new int[nz];
   int* nt_tab = new int[nz];
   int* np_tab = new int[nz];
@@ -182,7 +201,7 @@ void core(int i,int num)
   //-----------------------------------------------------------------------
 
   fich.open("par_eos.d") ;
-
+  //unique_ptr<Eos>  peos(Eos::eos_from_file(fich) );
   Eos* peos = Eos::eos_from_file(fich) ;
   Eos& eos = *peos ;
 
@@ -226,7 +245,7 @@ void core(int i,int num)
   delete [] type_r ; 
   delete [] bornes ; 
 
-  /*    
+      
   cout << endl 
 	<< "==========================================================" << endl
 	<< "                    Physical parameters                   " << endl
@@ -279,7 +298,7 @@ void core(int i,int num)
 	<< endl << "==========" << endl << mg << endl ; 
   cout << "Mapping : " 
 	<< endl << "=======" << endl << mp << endl ; 
-  */
+  
 
   //-----------------------------------------------------------------------
   //		Construction of the star
@@ -288,7 +307,7 @@ void core(int i,int num)
   Et_magnetisation star(mp, nzet, relat, eos, (use_magnetisation!=0), 
 			  (mag_in_eos!=0) ) ; 
 
-  /*  
+    
   if ( star.is_relativistic() ) {
 	  cout << "========================" << endl ;
 	  cout << "Relativistic computation" << endl ;
@@ -299,7 +318,7 @@ void core(int i,int num)
 	  cout << "Newtonian computation" << endl ;
 	  cout << "=====================" << endl ;
   }
-  */
+  
   //-----------------------------------------------------------------------
   //		Initialization of the enthalpy field
   //-----------------------------------------------------------------------
@@ -363,13 +382,13 @@ void core(int i,int num)
   star.equilibrium_mag(ent_c, omega, fact_omega, nzadapt, ent_limit, 
 	  icontrol, control, mbar_wanted, magmom_wanted,
 	  aexp_mass, diff, Q0, a_j0, &f_j, &M_j) ;
-  /*
+  
   cout << endl << "Final star : " 
 	<< endl << "==========   " << endl ;
 
   cout.precision(10) ; 
   cout << star << endl ; 
-  */  
+   
   const Base_vect_spher& bspher = mp.get_bvect_spher() ;
   Sym_tensor gij(mp, COV, bspher) ;
   gij.set_etat_zero() ;
@@ -393,16 +412,16 @@ void core(int i,int num)
   Tbl maxB = 0.5*(max(abs(Bmag(1))) + max(abs(Bmag(2)))) ;
   Scalar divB = Bmag.divergence(gam) ;
   
-  /*
+  
   cout << "div(B) / max(B) in each domain :  " 
 	<< max(abs(divB)) / maxB ; 
   cout << "Maximal magnetic field in the Eulerian frame: " 
 	<< max(max(norm_B_Euler))*mag_unit << " [T]" << endl ;
-  */
+  
 
   // Saveguard of the whole configuration
   // ------------------------------------
-
+  /*
   FILE* fresu = fopen("resu.d", "w") ;
     
   star.get_mp().get_mg()->sauve(fresu) ;	// writing of the grid
@@ -411,18 +430,22 @@ void core(int i,int num)
   star.sauve(fresu) ;                         // writing of the star
     
   fclose(fresu) ;
-      
+    */  
   out <<star.r_circ()*10 <<setw(15) << star.ray_eq ()*10<< setw(15);
   out<< star.ray_pole ()*10 << setw(15) << star.mass_g ()/msol << setw(15);
   out<< star.mass_b ()/msol << setw(15) << star.MagMom()/1.e32 << setw(15) ;
   out<< star.Magn()(0)(0,0,0,0)*mag_unit/1.e13 <<setw(15);
   out<<star.Magn()(0).va.val_point(star.l_surf()(0,0),star.xi_surf()(0,0),0.,0.)*mag_unit/1.e13;
-  out<<setw(15)<<star.Magn()(1).va.val_point(star.l_surf()(0,0),star.xi_surf()(0,0),M_PI/2.,0.)*mag_unit/1.e13 <<endl ;
-      
-
+  out<<setw(15)<<star.Magn()(1).va.val_point(star.l_surf()(0,0),star.xi_surf()(0,0),M_PI/2.,0.)*mag_unit/1.e13 <<setw(15)<<star.grv2()<<setw(15)<<star.grv3()<<setw(15) ;
+  out<<star.get_nbar()()(0,0,0,0)<<setw(15)<<energy_domain(star,0)+energy_domain(star,1)<<setw(15)<<star.get_press()()(0,0,0,0)<<setw(15)<<star.get_ener()()(0,0,0,0)<<setw(15)<<star.mom_quad()<<endl;    
+  ofstream k;
+  k.open("rot_par"+to_string(num)+".txt",ios_base::app);
+  k<<star.mass_b()/msol<<setw(15)<<star.Magn()(0)(0,0,0,0)*mag_unit/1.e13<<setw(15)<<star.get_omega_c()*f_unit/(2*M_PI)<<setw(15)<<star.angu_mom()<<endl;
+  k.close();
+  wy(fout,star,nt);
   // Drawings
   // --------
-    
+  /*
   if (graph == 1) {
 
 	char title[80] ;
@@ -448,7 +471,7 @@ void core(int i,int num)
 	des_coupe_y(star.get_ent()(), 0., nzdes, "Enthalpy", &surf) ; 
   rename("pgplot.png","enthalpy.png");
 
-	strcpy(title, "Gravitational potential \\gn") ; 
+	strcpy(title, "Gravitational potential \\gn") ;   
 
 	des_coupe_y(star.get_logn()(), 0., nzdes, title, &surf) ; 
 	rename("pgplot.png","grav.png");
@@ -466,31 +489,37 @@ void core(int i,int num)
 	des_coupe_y(star.get_ak_car()(), 0., nzdes, title, &surf) ; 
   rename("pgplot.png","A.png");
 
-  }
+  }*/
     // Cleaning
     // --------
-    delete peos ;
-    out.close();
+  delete peos ;
+  out.close();
+  fout.close();
+	//exit(EXIT_SUCCESS) ;
+	return EXIT_SUCCESS;
 }
 
 void worker(int number,int thread_num,int max_it)
 {
+  sleep(number*1.5);
   for (int i=number;i<max_it;i+=thread_num)
   {
-    core(i,number);
+    try
+    {
+      core(i,number);
+    }
+    catch(const std::invalid_argument& e)
+    {
+      std::cerr << e.what() << '\n';
+    }
+    
   }
 }
 
 int main(int argc, char *argv[])
 {
-  int thread_num=*argv[1]-48;
-  int max_it=*argv[2]-48;
-  ofstream out1;
-  out1.open("results.txt");
-  out1<<"R_circ"<< setw(15) << "R_eq" << setw(15) << "R_pole"<< setw(15) 
-  << "M_g"<< setw(15) << "M_b"<< setw(15) << "MM(1e32)"  << setw(15) << "Cent"<<setw(15)<<"RPolar"<<setw(15)<<"Teq"
-  << endl ;
-  out1.close();
+  int thread_num=atoi(argv[1]);
+  int max_it=atoi(argv[2]);
   MPI_Init(NULL, NULL);
 
   int rank;
@@ -499,3 +528,4 @@ int main(int argc, char *argv[])
   MPI_Finalize();
   return 0;
 }
+
