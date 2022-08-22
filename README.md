@@ -1,3 +1,4 @@
+# Improved by Mateusz Kapusta
 # SQSLorene
 Repository contains code used to calculate configuration of strange quark stars using LORENE library. Library consist of 
 ## EOS calculations
